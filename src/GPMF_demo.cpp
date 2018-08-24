@@ -24,9 +24,13 @@
 #include <string.h>
 #include <stdint.h>
 
+extern "C"
+{
 #include "GPMF_common.h"
 #include "GPMF_writer.h"
 #include "GPMF_parser.h"
+#include "GPMF_print.h"
+}
 
 #if !_WINDOWS
 #define sprintf_s(a,b,c) sprintf(a,c)
@@ -136,7 +140,6 @@ int main(int argc, char *argv[])
 				GPMF_ResetState(&gs);
 				do
 				{ 
-					extern void PrintGPMF(GPMF_stream *);
 					PrintGPMF(&gs);  // printf current GPMF KLV
 				} while (GPMF_OK == GPMF_Next(&gs, GPMF_RECURSE_LEVELS));
 			}
