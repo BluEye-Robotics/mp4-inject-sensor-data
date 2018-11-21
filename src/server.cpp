@@ -20,6 +20,7 @@ GstPad *tee_pad;
 GstPad *record_queue_pad, *display_queue_pad;
 GstElement *pipeline, *src;
 GstElement *record_queue, *mp4mux, *probe_queue, *filesink, *record_parse;
+GstElement *audiosrc, *audioenc;
 
 int framerate = 30;
 char media_type[STRINGSIZE];
@@ -31,6 +32,7 @@ void shutdown(int signum)
 {
   g_print("exit(%d)\n", signum);
   gst_element_send_event(record_parse, gst_event_new_eos());
+  gst_element_send_event(audioenc, gst_event_new_eos());
   //exit(signum);
 }
 
@@ -65,9 +67,18 @@ bool startRecord()
   g_object_set(G_OBJECT(record_queue), "max-size-bytes", 0, "max-size-time", (guint64) 3 * GST_SECOND, "max-size-buffers", 0, "leaky", 2, NULL);
   g_object_set(G_OBJECT(probe_queue), "max-size-bytes", 0, "max-size-time", (guint64) 3 * GST_SECOND, "max-size-buffers", 0, "leaky", 2, NULL);
 
-  gst_bin_add_many(GST_BIN(pipeline), src, record_queue, record_parse, probe_queue, mp4mux, filesink, NULL);
-  gst_element_link_many(src, record_queue, record_parse, probe_queue, mp4mux, filesink, NULL);
+  gst_bin_add_many(GST_BIN(pipeline), src, record_queue, record_parse, probe_queue, mp4mux, NULL);
+  gst_element_link_many(src, record_queue, record_parse, probe_queue, mp4mux, NULL);
 
+
+  audiosrc = gst_element_factory_make("autoaudiosrc", NULL);
+  audioenc = gst_element_factory_make("faac", NULL);
+
+  gst_bin_add_many(GST_BIN(pipeline), audiosrc, audioenc, NULL);
+  gst_element_link_many(audiosrc, audioenc, mp4mux, NULL);
+
+  gst_bin_add_many(GST_BIN(pipeline), filesink, NULL);
+  gst_element_link_many(mp4mux, filesink, NULL);
 
   return true;
 }
@@ -124,6 +135,25 @@ int main(int argc, char *argv[])
                 gst_element_state_get_name (old_state), gst_element_state_get_name (new_state));
           }
           break;
+          case GST_MESSAGE_ELEMENT:{
+            const GstStructure *s = gst_message_get_structure (msg);
+
+            if (gst_structure_has_name (s, "GstBinForwarded")) {
+              GstMessage *forward_msg = NULL;
+
+              gst_structure_get (s, "message", GST_TYPE_MESSAGE, &forward_msg, NULL);
+              if (GST_MESSAGE_TYPE (forward_msg) == GST_MESSAGE_EOS) {
+                g_print ("EOS from element %s\n",
+                    GST_OBJECT_NAME (GST_MESSAGE_SRC (forward_msg)));
+                gst_element_set_state (filesink, GST_STATE_NULL);
+                gst_element_set_state (mp4mux, GST_STATE_NULL);
+                gst_element_set_state (filesink, GST_STATE_PLAYING);
+                gst_element_set_state (mp4mux, GST_STATE_PLAYING);
+              }
+              gst_message_unref (forward_msg);
+            }
+            }
+            break;
         default:
           /* We should not reach here */
           g_printerr ("Unexpected message received.\n");
