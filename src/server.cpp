@@ -16,15 +16,10 @@ GMainLoop *loop = NULL;
 #define MEDIADIR          "/tmp"
 #define MEDIAPARTITION    "/dev/sda2"
 
-  GstMessage *msg;
-  GstStateChangeReturn ret;
-  GstBus *bus;
 GstPad *tee_pad;
 GstPad *record_queue_pad, *display_queue_pad;
-GstElement *pipeline, *src, *tee, *caps_queue, *capsfilter;
-GstElement *display_queue, *display_parse, *rtph264;
-GstElement *record_queue, *mp4mux, *probe_queue, *taginject, *filesink, *record_parse;
-std::mutex stop_record_mutex;
+GstElement *pipeline, *src;
+GstElement *record_queue, *mp4mux, *probe_queue, *filesink, *record_parse;
 
 int framerate = 30;
 char media_type[STRINGSIZE];
@@ -80,6 +75,9 @@ bool startRecord()
 
 int main(int argc, char *argv[])
 {
+  GstMessage *msg;
+  GstStateChangeReturn ret;
+  GstBus *bus;
   gboolean terminate = FALSE;
   gst_init(&argc, &argv);
 
@@ -126,25 +124,6 @@ int main(int argc, char *argv[])
                 gst_element_state_get_name (old_state), gst_element_state_get_name (new_state));
           }
           break;
-          case GST_MESSAGE_ELEMENT:{
-            const GstStructure *s = gst_message_get_structure (msg);
-
-            if (gst_structure_has_name (s, "GstBinForwarded")) {
-              GstMessage *forward_msg = NULL;
-
-              gst_structure_get (s, "message", GST_TYPE_MESSAGE, &forward_msg, NULL);
-              if (GST_MESSAGE_TYPE (forward_msg) == GST_MESSAGE_EOS) {
-                g_print ("EOS from element %s\n",
-                    GST_OBJECT_NAME (GST_MESSAGE_SRC (forward_msg)));
-                gst_element_set_state (filesink, GST_STATE_NULL);
-                gst_element_set_state (mp4mux, GST_STATE_NULL);
-                gst_element_set_state (filesink, GST_STATE_PLAYING);
-                gst_element_set_state (mp4mux, GST_STATE_PLAYING);
-              }
-              gst_message_unref (forward_msg);
-            }
-            }
-            break;
         default:
           /* We should not reach here */
           g_printerr ("Unexpected message received.\n");

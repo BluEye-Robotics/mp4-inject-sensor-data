@@ -6,3 +6,4 @@ build-*/*
 massif.*
 .tup
 *.log
+*.mp4
