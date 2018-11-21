@@ -1,10 +1,14 @@
 // Copyright 2018 Blueye Robotics AS
-#include <gst/rtsp-server/rtsp-server.h>
+#include <gst/gst.h>
+#include <gst/audio/audio.h>
 #include <signal.h>
 #include <blkid/blkid.h>
 #include <sys/stat.h>
 #include <mutex>
 #include <stdio.h>
+
+#include "GPMF_common.h"
+#include "GPMF_writer.h"
 
 GMainLoop *loop = NULL;
 
@@ -20,36 +24,79 @@ GstPad *tee_pad;
 GstPad *record_queue_pad, *display_queue_pad;
 GstElement *pipeline, *src;
 GstElement *record_queue, *mp4mux, *probe_queue, *filesink, *record_parse;
-GstElement *audiosrc, *audioenc;
+GstElement *appsrc;
+//GstElement *audioenc;
+
+guint64 num_samples;   /* Number of samples generated so far (for timestamp generation) */
+guint sourceid;        /* To control the GSource */
 
 int framerate = 30;
 char media_type[STRINGSIZE];
 int height = 1080;
 int width  = 1920;
 
+#define CHUNK_SIZE 1024   /* Amount of bytes we are sending in each buffer */
+#define SAMPLE_RATE 44100 /* Samples per second we are sending */
+
+static gboolean push_data (gpointer throwaway) {
+  GstBuffer *buffer;
+  GstFlowReturn ret;
+  GstMapInfo map;
+  gint16 *raw;
+  gint additional_num_samples = CHUNK_SIZE / 2; /* Because each sample is 16 bits */
+
+  /* Create a new empty buffer */
+  buffer = gst_buffer_new_and_alloc (CHUNK_SIZE);
+
+  /* Set its timestamp and duration */
+  GST_BUFFER_TIMESTAMP (buffer) = gst_util_uint64_scale (additional_num_samples, GST_SECOND, SAMPLE_RATE);
+  GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale (additional_num_samples, GST_SECOND, SAMPLE_RATE);
+
+  /* Generate some psychodelic waveforms */
+  gst_buffer_map (buffer, &map, GST_MAP_WRITE);
+  raw = (gint16 *)map.data;
+
+  for (int i = 0; i < additional_num_samples; i++) {
+    raw[i] = (gint16)0x1234;// (gint16)(500 * data->a);
+  }
+  gst_buffer_unmap (buffer, &map);
+  num_samples += additional_num_samples;
+
+  /* Push the buffer into the appsrc */
+  g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
+
+  /* Free the buffer now that we are done with it */
+  gst_buffer_unref (buffer);
+
+  if (ret != GST_FLOW_OK) {
+    /* We got some error, stop sending data */
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+static void start_feed (GstElement *source, guint size, gpointer throwaway) {
+  if (sourceid == 0) {
+    g_print ("Start feeding\n");
+    sourceid = g_idle_add ((GSourceFunc) push_data, NULL);
+  }
+}
+
+static void stop_feed (GstElement *source, gpointer throwaway) {
+  if (sourceid != 0) {
+    g_print ("Stop feeding\n");
+    g_source_remove (sourceid);
+    sourceid = 0;
+  }
+}
 
 void shutdown(int signum)
 {
   g_print("exit(%d)\n", signum);
   gst_element_send_event(record_parse, gst_event_new_eos());
-  gst_element_send_event(audioenc, gst_event_new_eos());
+  gst_element_send_event(appsrc, gst_event_new_eos());
   //exit(signum);
-}
-
-
-#define CAPS_EXTRACT_PARAM(caps, param) \
-{ \
-  GstStructure *structure = gst_caps_get_structure(caps, 0); \
-  gchar *str = gst_value_serialize(gst_structure_get_value(structure, #param)); \
-  (param) = atoi(str); \
-  g_free(str); \
-}
-
-#define CAPS_EXTRACT_MEDIA_TYPE(caps, media_type_var) \
-{ \
-  GstStructure *structure = gst_caps_get_structure(caps, 0); \
-  const gchar* str = gst_structure_get_name(structure); \
-  snprintf(media_type_var, sizeof(media_type_var), "%s", str); \
 }
 
 bool startRecord()
@@ -62,6 +109,8 @@ bool startRecord()
   mp4mux = gst_element_factory_make("mp4mux", NULL);
   filesink = gst_element_factory_make("filesink", NULL);
 
+  //g_object_set(src, "device", "/dev/video0", NULL);
+
   g_object_set(filesink, "location", "out.mp4", NULL);
 
   g_object_set(G_OBJECT(record_queue), "max-size-bytes", 0, "max-size-time", (guint64) 3 * GST_SECOND, "max-size-buffers", 0, "leaky", 2, NULL);
@@ -71,11 +120,21 @@ bool startRecord()
   gst_element_link_many(src, record_queue, record_parse, probe_queue, mp4mux, NULL);
 
 
-  audiosrc = gst_element_factory_make("autoaudiosrc", NULL);
-  audioenc = gst_element_factory_make("faac", NULL);
+  //audiosrc = gst_element_factory_make("autoaudiosrc", NULL);
+  appsrc = gst_element_factory_make("appsrc", NULL);
+  //audioenc = gst_element_factory_make("faac", NULL);
 
-  gst_bin_add_many(GST_BIN(pipeline), audiosrc, audioenc, NULL);
-  gst_element_link_many(audiosrc, audioenc, mp4mux, NULL);
+  /* Configure appsrc */
+  GstAudioInfo info;
+  GstCaps *audio_caps;
+  gst_audio_info_set_format (&info, GST_AUDIO_FORMAT_S16, SAMPLE_RATE, 1, NULL);
+  audio_caps = gst_audio_info_to_caps (&info);
+  g_object_set (appsrc, "caps", audio_caps, "format", GST_FORMAT_TIME, NULL);
+  g_signal_connect (appsrc, "need-data", G_CALLBACK (start_feed), NULL);
+  g_signal_connect (appsrc, "enough-data", G_CALLBACK (stop_feed), NULL);
+
+  gst_bin_add_many(GST_BIN(pipeline), appsrc, NULL);
+  gst_element_link_many(appsrc, mp4mux, NULL);
 
   gst_bin_add_many(GST_BIN(pipeline), filesink, NULL);
   gst_element_link_many(mp4mux, filesink, NULL);
@@ -83,13 +142,14 @@ bool startRecord()
   return true;
 }
 
-
 int main(int argc, char *argv[])
 {
   GstMessage *msg;
   GstStateChangeReturn ret;
   GstBus *bus;
   gboolean terminate = FALSE;
+
+
   gst_init(&argc, &argv);
 
   pipeline = gst_pipeline_new("test-pipeline");
