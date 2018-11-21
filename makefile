@@ -1,6 +1,6 @@
 # No filename makefile with dependency control as per http://make.mad-scientist.net/papers/advanced-auto-dependency-generation/ and http://scottmcpeak.com/autodepend/autodepend.html                                                   
-CFLAGS = -O2 -fPIC -g -Wno-write-strings -Isrc
-LIBS = -lpthread
+CFLAGS = -O2 -fPIC -g -Wno-write-strings -Isrc `pkg-config --cflags gstreamer-rtsp-server-1.0`
+LIBS = -lpthread `pkg-config --libs gstreamer-rtsp-server-1.0` -lSDL2
 SOURCE_DIR = src
 BUILD_DIR = build-default
 OUT_DIR = $(BUILD_DIR)/$(SOURCE_DIR)
