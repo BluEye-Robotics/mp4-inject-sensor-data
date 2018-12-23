@@ -6,61 +6,41 @@
 #include <sys/stat.h>
 #include <mutex>
 #include <stdio.h>
-
-#include "GPMF_common.h"
-#include "GPMF_writer.h"
+#include <thread>
+#include <unistd.h>
 
 GMainLoop *loop = NULL;
 
-#define STRINGSIZE 100
-#define DEFAULT_RTSP_PORT "8554"
-#define DEVICE            "/dev/video0"
-#define CAPS_STRING       "video/x-raw, width=1280, height=720, framerate=30/1"
-#define VIDEO_PARSER      "x264enc"
-#define MEDIADIR          "/tmp"
-#define MEDIAPARTITION    "/dev/sda2"
 
 GstPad *tee_pad;
 GstPad *record_queue_pad, *display_queue_pad;
 GstElement *pipeline, *src;
-GstElement *record_queue, *mp4mux, *probe_queue, *filesink, *record_parse;
+GstElement *record_queue, *mp4mux, *probe_queue, *filesink, *enc;
 GstElement *appsrc;
-//GstElement *audioenc;
+GstElement *audioenc;
 
 guint64 num_samples;   /* Number of samples generated so far (for timestamp generation) */
 guint sourceid;        /* To control the GSource */
 
-int framerate = 30;
-char media_type[STRINGSIZE];
-int height = 1080;
-int width  = 1920;
-
 #define CHUNK_SIZE 1024   /* Amount of bytes we are sending in each buffer */
 #define SAMPLE_RATE 44100 /* Samples per second we are sending */
 
-static gboolean push_data (gpointer throwaway) {
+static gboolean push_data (gpointer data) {
+  g_print("push\n");
   GstBuffer *buffer;
   GstFlowReturn ret;
-  GstMapInfo map;
-  gint16 *raw;
-  gint additional_num_samples = CHUNK_SIZE / 2; /* Because each sample is 16 bits */
 
   /* Create a new empty buffer */
-  buffer = gst_buffer_new_and_alloc (CHUNK_SIZE);
+  buffer = gst_buffer_new();
 
-  /* Set its timestamp and duration */
-  GST_BUFFER_TIMESTAMP (buffer) = gst_util_uint64_scale (additional_num_samples, GST_SECOND, SAMPLE_RATE);
-  GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale (additional_num_samples, GST_SECOND, SAMPLE_RATE);
+  //gst_buffer_fill(buffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
 
-  /* Generate some psychodelic waveforms */
-  gst_buffer_map (buffer, &map, GST_MAP_WRITE);
-  raw = (gint16 *)map.data;
-
-  for (int i = 0; i < additional_num_samples; i++) {
-    raw[i] = (gint16)0x1234;// (gint16)(500 * data->a);
-  }
-  gst_buffer_unmap (buffer, &map);
-  num_samples += additional_num_samples;
+  char b[10];
+  static uint64_t counter = 0;
+  snprintf(b, 10, "ii%d", counter++);
+  GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
+  gst_buffer_append_memory(buffer, mem);
+  gst_buffer_fill(buffer, 0, b, strlen(b));
 
   /* Push the buffer into the appsrc */
   g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
@@ -94,7 +74,7 @@ static void stop_feed (GstElement *source, gpointer throwaway) {
 void shutdown(int signum)
 {
   g_print("exit(%d)\n", signum);
-  gst_element_send_event(record_parse, gst_event_new_eos());
+  gst_element_send_event(enc, gst_event_new_eos());
   gst_element_send_event(appsrc, gst_event_new_eos());
   //exit(signum);
 }
@@ -104,9 +84,9 @@ bool startRecord()
   g_print("startRecord\n");
   src = gst_element_factory_make("videotestsrc", "src");
   record_queue = gst_element_factory_make("queue", "record_queue");
-  record_parse = gst_element_factory_make(VIDEO_PARSER, "record_parse");
+  enc = gst_element_factory_make("x264enc", "enc");
   probe_queue = gst_element_factory_make("queue", "probe_queue");
-  mp4mux = gst_element_factory_make("mp4mux", NULL);
+  mp4mux = gst_element_factory_make("qtmux", NULL);
   filesink = gst_element_factory_make("filesink", NULL);
 
   //g_object_set(src, "device", "/dev/video0", NULL);
@@ -116,25 +96,33 @@ bool startRecord()
   g_object_set(G_OBJECT(record_queue), "max-size-bytes", 0, "max-size-time", (guint64) 3 * GST_SECOND, "max-size-buffers", 0, "leaky", 2, NULL);
   g_object_set(G_OBJECT(probe_queue), "max-size-bytes", 0, "max-size-time", (guint64) 3 * GST_SECOND, "max-size-buffers", 0, "leaky", 2, NULL);
 
-  gst_bin_add_many(GST_BIN(pipeline), src, record_queue, record_parse, probe_queue, mp4mux, NULL);
-  gst_element_link_many(src, record_queue, record_parse, probe_queue, mp4mux, NULL);
+  gst_bin_add_many(GST_BIN(pipeline), src, record_queue, enc, probe_queue, mp4mux, NULL);
+  gst_element_link_many(src, record_queue, enc, probe_queue, mp4mux, NULL);
 
 
-  //audiosrc = gst_element_factory_make("autoaudiosrc", NULL);
   appsrc = gst_element_factory_make("appsrc", NULL);
+  GstCaps *caps = gst_caps_from_string("text/x-raw, format=(string)utf8");
+  //appsrc = gst_element_factory_make("autoaudiosrc", NULL);
   //audioenc = gst_element_factory_make("faac", NULL);
 
   /* Configure appsrc */
-  GstAudioInfo info;
-  GstCaps *audio_caps;
-  gst_audio_info_set_format (&info, GST_AUDIO_FORMAT_S16, SAMPLE_RATE, 1, NULL);
-  audio_caps = gst_audio_info_to_caps (&info);
-  g_object_set (appsrc, "caps", audio_caps, "format", GST_FORMAT_TIME, NULL);
-  g_signal_connect (appsrc, "need-data", G_CALLBACK (start_feed), NULL);
-  g_signal_connect (appsrc, "enough-data", G_CALLBACK (stop_feed), NULL);
+  g_object_set (appsrc, "caps", caps, NULL);
+  g_object_set(G_OBJECT(appsrc), 
+                "stream-type", 0, // GST_APP_STREAM_TYPE_STREAM 
+                "format", GST_FORMAT_TIME, 
+                "is-live", TRUE, 
+                "do-timestamp", TRUE,
+                NULL); 
+  //g_signal_connect (appsrc, "need-data", G_CALLBACK (start_feed), NULL);
+  //g_signal_connect (appsrc, "enough-data", G_CALLBACK (stop_feed), NULL);
 
   gst_bin_add_many(GST_BIN(pipeline), appsrc, NULL);
-  gst_element_link_many(appsrc, mp4mux, NULL);
+  //gst_element_link_many(appsrc, mp4mux, NULL);
+  {
+    GstPad *srcpad = gst_element_get_static_pad(appsrc, "src");
+    GstPad *sinkpad = gst_element_get_request_pad(mp4mux, "gpmf_0");
+    gst_pad_link (srcpad, sinkpad);
+  }
 
   gst_bin_add_many(GST_BIN(pipeline), filesink, NULL);
   gst_element_link_many(mp4mux, filesink, NULL);
@@ -161,6 +149,15 @@ int main(int argc, char *argv[])
   bus = gst_element_get_bus (pipeline);
 
   signal(SIGINT, shutdown);
+
+  std::thread t0([&](){
+    sleep(5);
+    while(!terminate)
+    {
+      push_data(NULL);
+      usleep(100000);
+    }
+    });
 
   do 
   {
