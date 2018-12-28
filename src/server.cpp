@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <thread>
 #include <unistd.h>
+#include "sys/time.h"
 
 GMainLoop *loop = NULL;
 
@@ -22,63 +23,25 @@ GstElement *audioenc;
 guint64 num_samples;   /* Number of samples generated so far (for timestamp generation) */
 guint sourceid = 0;        /* To control the GSource */
 
-static void
-cb_need_data (GstElement *appsrc,
-guint unused_size,
-gpointer user_data)
-{
-  g_print("j");
-  //static GstClockTime timestamp = 0;
-  //GstBuffer *buffer;
-  //GstFlowReturn ret;
-  //
-  //buffer = gst_buffer_new_allocate (NULL, 3, NULL);
-  //char b[10];
-  //static uint64_t counter = 0;
-  //snprintf(b, 10, "iiiiiiiii%d", counter++ % 10);
-  ////b[0] = 0x08;
-  ////b[1] = 0x08;
-  ////b[2] = 0x08;
-  //GST_BUFFER_PTS (buffer) = timestamp;
-  //GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, 2);
-  //timestamp += GST_BUFFER_DURATION (buffer);
-  //g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
-  //if (ret != GST_FLOW_OK) {
-  //  /* something wrong, stop pushing */
-  //  g_main_loop_quit (loop);
-  //}
+uint64_t recording_beginning;
 
-  GstBuffer *buffer;
-  GstFlowReturn ret;
+#define CHUNK_SIZE 3   /* Amount of bytes we are sending in each buffer */
+#define SAMPLE_RATE 200 /* Samples per second we are sending */
 
-  /* Create a new empty buffer */
-  buffer = gst_buffer_new();
+inline uint64_t msNow(){
+  struct timeval tp;
+  gettimeofday(&tp, NULL);
 
-  //gst_buffer_fill(buffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
-
-  char b[3];
-  static uint64_t counter = 0;
-  //snprintf(b, 10, "ii%d", counter++);
-  b[0] = 0x08;
-  b[1] = 0x08;
-  b[2] = 0x08;
-  GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
-  gst_buffer_append_memory(buffer, mem);
-  gst_buffer_fill(buffer, 0, b, strlen(b));
-
-  /* Push the buffer into the appsrc */
-  g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
-
-  /* Free the buffer now that we are done with it */
-  gst_buffer_unref (buffer);
-
-  if (ret != GST_FLOW_OK) {
-    /* We got some error, stop sending data */
-    g_main_loop_quit (loop);
-  }
+  uint64_t ms = tp.tv_sec*1000 + tp.tv_usec/1000;
+  return ms;
 }
 
 static gboolean push_data (gpointer data) {
+  auto now = msNow();
+  static auto before = now;
+  if (now - before < 50)
+    return TRUE;
+  before = now;
   g_print("i");
   GstBuffer *buffer;
   GstFlowReturn ret;
@@ -88,20 +51,25 @@ static gboolean push_data (gpointer data) {
 
   //gst_buffer_fill(buffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
 
-  char b[3];
+  char b[4];
   static uint64_t counter = 0;
+  //g_print("%d", counter);
   //snprintf(b, 10, "ii%d", counter++);
   b[0] = 0x08;
   b[1] = 0x08;
   b[2] = 0x08;
+  b[3] = counter++ % 0xff;
   GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
   gst_buffer_append_memory(buffer, mem);
   gst_buffer_fill(buffer, 0, b, strlen(b));
 
   static GstClockTime timestamp = 0;
+  //GstClockTime timestamp = now - recording_beginning - 1;
+  //timestamp *= 1e5;
   GST_BUFFER_PTS (buffer) = timestamp;
   GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, SAMPLE_RATE);
   timestamp += GST_BUFFER_DURATION (buffer);
+  //g_print("\t%lu\t", timestamp);
 
   /* Push the buffer into the appsrc */
   g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
@@ -276,6 +244,8 @@ int main(int argc, char *argv[])
   g_signal_connect (appsrc, "enough-data", G_CALLBACK (stop_feed), NULL);
 
   signal(SIGINT, shutdown);
+
+  recording_beginning = msNow();
 
   if (gst_element_set_state (pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
   {
