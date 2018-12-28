@@ -20,13 +20,34 @@ GstElement *appsrc;
 GstElement *audioenc;
 
 guint64 num_samples;   /* Number of samples generated so far (for timestamp generation) */
-guint sourceid;        /* To control the GSource */
+guint sourceid = 0;        /* To control the GSource */
 
-#define CHUNK_SIZE 1024   /* Amount of bytes we are sending in each buffer */
-#define SAMPLE_RATE 44100 /* Samples per second we are sending */
+static void
+cb_need_data (GstElement *appsrc,
+guint unused_size,
+gpointer user_data)
+{
+  g_print("j");
+  //static GstClockTime timestamp = 0;
+  //GstBuffer *buffer;
+  //GstFlowReturn ret;
+  //
+  //buffer = gst_buffer_new_allocate (NULL, 3, NULL);
+  //char b[10];
+  //static uint64_t counter = 0;
+  //snprintf(b, 10, "iiiiiiiii%d", counter++ % 10);
+  ////b[0] = 0x08;
+  ////b[1] = 0x08;
+  ////b[2] = 0x08;
+  //GST_BUFFER_PTS (buffer) = timestamp;
+  //GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, 2);
+  //timestamp += GST_BUFFER_DURATION (buffer);
+  //g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
+  //if (ret != GST_FLOW_OK) {
+  //  /* something wrong, stop pushing */
+  //  g_main_loop_quit (loop);
+  //}
 
-static gboolean push_data (gpointer data) {
-  g_print("push\n");
   GstBuffer *buffer;
   GstFlowReturn ret;
 
@@ -35,12 +56,52 @@ static gboolean push_data (gpointer data) {
 
   //gst_buffer_fill(buffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
 
-  char b[10];
+  char b[3];
   static uint64_t counter = 0;
-  snprintf(b, 10, "ii%d", counter++);
+  //snprintf(b, 10, "ii%d", counter++);
+  b[0] = 0x08;
+  b[1] = 0x08;
+  b[2] = 0x08;
   GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
   gst_buffer_append_memory(buffer, mem);
   gst_buffer_fill(buffer, 0, b, strlen(b));
+
+  /* Push the buffer into the appsrc */
+  g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
+
+  /* Free the buffer now that we are done with it */
+  gst_buffer_unref (buffer);
+
+  if (ret != GST_FLOW_OK) {
+    /* We got some error, stop sending data */
+    g_main_loop_quit (loop);
+  }
+}
+
+static gboolean push_data (gpointer data) {
+  g_print("i");
+  GstBuffer *buffer;
+  GstFlowReturn ret;
+
+  /* Create a new empty buffer */
+  buffer = gst_buffer_new();
+
+  //gst_buffer_fill(buffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
+
+  char b[3];
+  static uint64_t counter = 0;
+  //snprintf(b, 10, "ii%d", counter++);
+  b[0] = 0x08;
+  b[1] = 0x08;
+  b[2] = 0x08;
+  GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
+  gst_buffer_append_memory(buffer, mem);
+  gst_buffer_fill(buffer, 0, b, strlen(b));
+
+  static GstClockTime timestamp = 0;
+  GST_BUFFER_PTS (buffer) = timestamp;
+  GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, SAMPLE_RATE);
+  timestamp += GST_BUFFER_DURATION (buffer);
 
   /* Push the buffer into the appsrc */
   g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
@@ -74,9 +135,70 @@ static void stop_feed (GstElement *source, gpointer throwaway) {
 void shutdown(int signum)
 {
   g_print("exit(%d)\n", signum);
+  g_source_remove (sourceid);
   gst_element_send_event(enc, gst_event_new_eos());
   gst_element_send_event(appsrc, gst_event_new_eos());
+  //gst_element_send_event(pipeline, gst_event_new_eos());
   //exit(signum);
+}
+
+static gboolean bus_message (GstBus * bus, GstMessage * msg, gpointer user_data)
+{
+  /* Parse message */
+  if (msg != NULL) {
+    GError *err;
+    gchar *debug_info;
+
+    switch (GST_MESSAGE_TYPE (msg))
+    {
+      case GST_MESSAGE_ERROR:
+        gst_message_parse_error (msg, &err, &debug_info);
+        g_printerr ("Error received from element %s: %s\n", GST_OBJECT_NAME (msg->src), err->message);
+        g_printerr ("Debugging information: %s\n", debug_info ? debug_info : "none");
+        g_clear_error (&err);
+        g_free (debug_info);
+        g_main_loop_quit (loop);
+        break;
+      case GST_MESSAGE_EOS:
+        g_print ("End-Of-Stream reached.\n");
+        g_main_loop_quit (loop);
+        break;
+      case GST_MESSAGE_STATE_CHANGED:
+        /* We are only interested in state-changed messages from the pipeline */
+        if (GST_MESSAGE_SRC (msg) == GST_OBJECT (pipeline)) {
+          GstState old_state, new_state, pending_state;
+          gst_message_parse_state_changed (msg, &old_state, &new_state, &pending_state);
+          g_print ("Pipeline state changed from %s to %s:\n",
+              gst_element_state_get_name (old_state), gst_element_state_get_name (new_state));
+        }
+        break;
+      case GST_MESSAGE_ELEMENT:{
+        const GstStructure *s = gst_message_get_structure (msg);
+
+        if (gst_structure_has_name (s, "GstBinForwarded")) {
+          GstMessage *forward_msg = NULL;
+
+          gst_structure_get (s, "message", GST_TYPE_MESSAGE, &forward_msg, NULL);
+          if (GST_MESSAGE_TYPE (forward_msg) == GST_MESSAGE_EOS) {
+            g_print ("EOS from element %s\n",
+                GST_OBJECT_NAME (GST_MESSAGE_SRC (forward_msg)));
+            gst_element_set_state (filesink, GST_STATE_NULL);
+            gst_element_set_state (mp4mux, GST_STATE_NULL);
+            gst_element_set_state (filesink, GST_STATE_PLAYING);
+            gst_element_set_state (mp4mux, GST_STATE_PLAYING);
+          }
+          gst_message_unref (forward_msg);
+        }
+        }
+        break;
+      default:
+        /* We should not reach here */
+        g_printerr ("Unexpected message received: %s\n", GST_MESSAGE_TYPE_NAME(msg));
+        break;
+    }
+    gst_message_unref (msg);
+  }
+  return TRUE;
 }
 
 bool startRecord()
@@ -90,6 +212,7 @@ bool startRecord()
   filesink = gst_element_factory_make("filesink", NULL);
 
   //g_object_set(src, "device", "/dev/video0", NULL);
+  g_object_set(src, "is-live", TRUE, NULL);
 
   g_object_set(filesink, "location", "out.mp4", NULL);
 
@@ -113,8 +236,6 @@ bool startRecord()
                 "is-live", TRUE, 
                 "do-timestamp", TRUE,
                 NULL); 
-  //g_signal_connect (appsrc, "need-data", G_CALLBACK (start_feed), NULL);
-  //g_signal_connect (appsrc, "enough-data", G_CALLBACK (stop_feed), NULL);
 
   gst_bin_add_many(GST_BIN(pipeline), appsrc, NULL);
   //gst_element_link_many(appsrc, mp4mux, NULL);
@@ -135,7 +256,8 @@ int main(int argc, char *argv[])
   GstMessage *msg;
   GstStateChangeReturn ret;
   GstBus *bus;
-  gboolean terminate = FALSE;
+
+  loop = g_main_loop_new (NULL, TRUE);
 
 
   gst_init(&argc, &argv);
@@ -144,84 +266,43 @@ int main(int argc, char *argv[])
 
   startRecord();
 
+  bus = gst_pipeline_get_bus (GST_PIPELINE(pipeline));
+  gst_bus_add_watch (bus, (GstBusFunc) bus_message, NULL);
+  gst_object_unref(bus);
 
-  gst_element_set_state (pipeline, GST_STATE_PLAYING);
-  bus = gst_element_get_bus (pipeline);
+
+  //g_signal_connect (appsrc, "need-data", G_CALLBACK (cb_need_data), NULL);
+  g_signal_connect (appsrc, "need-data", G_CALLBACK (start_feed), NULL);
+  g_signal_connect (appsrc, "enough-data", G_CALLBACK (stop_feed), NULL);
 
   signal(SIGINT, shutdown);
 
-  std::thread t0([&](){
-    sleep(5);
-    while(!terminate)
-    {
-      push_data(NULL);
-      usleep(100000);
-    }
-    });
-
-  do 
+  if (gst_element_set_state (pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
   {
-    msg = gst_bus_timed_pop_filtered (bus, GST_CLOCK_TIME_NONE,
-        (GstMessageType)(GST_MESSAGE_STATE_CHANGED | GST_MESSAGE_ERROR | GST_MESSAGE_EOS));
+    g_print("Couldn't play stream\n");
+    exit(1);
+  }
 
-    /* Parse message */
-    if (msg != NULL) {
-      GError *err;
-      gchar *debug_info;
+  g_print("running...\n");
+  g_main_loop_run (loop);
+  g_print("stopped\n");
 
-      switch (GST_MESSAGE_TYPE (msg)) 
-      {
-        case GST_MESSAGE_ERROR:
-          gst_message_parse_error (msg, &err, &debug_info);
-          g_printerr ("Error received from element %s: %s\n", GST_OBJECT_NAME (msg->src), err->message);
-          g_printerr ("Debugging information: %s\n", debug_info ? debug_info : "none");
-          g_clear_error (&err);
-          g_free (debug_info);
-          terminate = TRUE;
-          break;
-        case GST_MESSAGE_EOS:
-          g_print ("End-Of-Stream reached.\n");
-          terminate = TRUE;
-          break;
-        case GST_MESSAGE_STATE_CHANGED:
-          /* We are only interested in state-changed messages from the pipeline */
-          if (GST_MESSAGE_SRC (msg) == GST_OBJECT (pipeline)) {
-            GstState old_state, new_state, pending_state;
-            gst_message_parse_state_changed (msg, &old_state, &new_state, &pending_state);
-            g_print ("Pipeline state changed from %s to %s:\n",
-                gst_element_state_get_name (old_state), gst_element_state_get_name (new_state));
-          }
-          break;
-          case GST_MESSAGE_ELEMENT:{
-            const GstStructure *s = gst_message_get_structure (msg);
+  //std::thread t0([&](){
+  //  sleep(5);
+  //    push_data(NULL);
+  //  sleep(5);
+  //    push_data(NULL);
+  //  while(!terminate)
+  //  {
+  //    push_data(NULL);
+  //    usleep(100000);
+  //  }
+  //  });
 
-            if (gst_structure_has_name (s, "GstBinForwarded")) {
-              GstMessage *forward_msg = NULL;
-
-              gst_structure_get (s, "message", GST_TYPE_MESSAGE, &forward_msg, NULL);
-              if (GST_MESSAGE_TYPE (forward_msg) == GST_MESSAGE_EOS) {
-                g_print ("EOS from element %s\n",
-                    GST_OBJECT_NAME (GST_MESSAGE_SRC (forward_msg)));
-                gst_element_set_state (filesink, GST_STATE_NULL);
-                gst_element_set_state (mp4mux, GST_STATE_NULL);
-                gst_element_set_state (filesink, GST_STATE_PLAYING);
-                gst_element_set_state (mp4mux, GST_STATE_PLAYING);
-              }
-              gst_message_unref (forward_msg);
-            }
-            }
-            break;
-        default:
-          /* We should not reach here */
-          g_printerr ("Unexpected message received.\n");
-          break;
-      }
-      gst_message_unref (msg);
-    }
-  } while (!terminate);
   /* create a server instance */
   /* start serving */
   gst_object_unref (bus);
+  g_main_loop_unref (loop);
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gst_object_unref (pipeline);
 
