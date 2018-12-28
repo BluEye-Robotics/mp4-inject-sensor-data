@@ -9,6 +9,8 @@
 #include <thread>
 #include <unistd.h>
 #include "sys/time.h"
+#include "GPMF_common.h"
+#include "GPMF_writer.h"
 
 GMainLoop *loop = NULL;
 
@@ -26,7 +28,7 @@ guint sourceid = 0;        /* To control the GSource */
 uint64_t recording_beginning;
 
 #define CHUNK_SIZE 3   /* Amount of bytes we are sending in each buffer */
-#define SAMPLE_RATE 200 /* Samples per second we are sending */
+#define SAMPLE_RATE 1 /* Samples per second we are sending */
 
 inline uint64_t msNow(){
   struct timeval tp;
@@ -36,10 +38,26 @@ inline uint64_t msNow(){
   return ms;
 }
 
+#define sprintf_s(a,b,c) sprintf(a,c)
+
+#pragma pack(push)
+#pragma pack(1)   //GPMF sensor data structures are always byte packed.
+
+size_t gpmfhandle = 0;
+size_t handleA;
+
+typedef struct sensorAdata  // Example 10-byte pack structure.
+{
+  uint32_t flags;
+  uint8_t ID[6];
+} sensorAdata;
+
+#pragma pack(pop)
+
 static gboolean push_data (gpointer data) {
   auto now = msNow();
   static auto before = now;
-  if (now - before < 50)
+  if (now - before < 1000)
     return TRUE;
   before = now;
   g_print("i");
@@ -51,17 +69,42 @@ static gboolean push_data (gpointer data) {
 
   //gst_buffer_fill(buffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
 
-  char b[4];
-  static uint64_t counter = 0;
-  //g_print("%d", counter);
-  //snprintf(b, 10, "ii%d", counter++);
-  b[0] = 0x08;
-  b[1] = 0x08;
-  b[2] = 0x08;
-  b[3] = counter++ % 0xff;
-  GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
+  //char b[4];
+  //static uint64_t counter = 0;
+  ////g_print("%d", counter);
+  ////snprintf(b, 10, "ii%d", counter++);
+  //b[0] = 0x08;
+  //b[1] = 0x08;
+  //b[2] = 0x08;
+  //b[3] = counter++ % 0xff;
+  //GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
+  //gst_buffer_append_memory(buffer, mem);
+  //gst_buffer_fill(buffer, 0, b, strlen(b));
+
+  uint32_t samples;
+  uint32_t err;
+  sensorAdata Adata[4];
+  static uint32_t count = 0;
+
+  samples = 1 + (rand() % 3); //1-4 values
+  for (uint32_t i = 0; i < samples; i++)
+  {
+    Adata[i].flags = count++;
+    Adata[i].ID[0] = 1;
+    Adata[i].ID[1] = 2;
+    Adata[i].ID[2] = 3;
+    Adata[i].ID[3] = 4;
+    Adata[i].ID[4] = 5;
+    Adata[i].ID[5] = 6;
+  }
+  err = GPMFWriteStreamStore(handleA, STR2FOURCC("SnrA"), GPMF_TYPE_COMPLEX, sizeof(sensorAdata), samples, Adata, GPMF_FLAGS_NONE);
+  if (err) printf("err = %d\n", err);
+
+  device_metadata* p = (device_metadata*)handleA;
+
+  GstMemory *mem = gst_allocator_alloc(NULL, p->payload_curr_size, NULL);
   gst_buffer_append_memory(buffer, mem);
-  gst_buffer_fill(buffer, 0, b, strlen(b));
+  gst_buffer_fill(buffer, 0, p->payload_buffer, p->payload_alloc_size); //payload_curr_size);
 
   static GstClockTime timestamp = 0;
   //GstClockTime timestamp = now - recording_beginning - 1;
@@ -106,6 +149,8 @@ void shutdown(int signum)
   g_source_remove (sourceid);
   gst_element_send_event(enc, gst_event_new_eos());
   gst_element_send_event(appsrc, gst_event_new_eos());
+  GPMFWriteStreamClose(handleA);
+  GPMFWriteServiceClose(gpmfhandle);
   //gst_element_send_event(pipeline, gst_event_new_eos());
   //exit(signum);
 }
@@ -221,6 +266,39 @@ bool startRecord()
 
 int main(int argc, char *argv[])
 {
+  gpmfhandle = GPMFWriteServiceInit();
+  if (gpmfhandle == 0)
+  {
+    g_print("Couldn't create gpmfhandle\n");
+    exit(1);
+  }
+
+  char buffer[8192];
+  char sensorA[4096];
+  uint32_t *payload, payload_size;
+  uint32_t tmp,faketime,fakedata;
+  char txt[80];
+
+  handleA = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "MyCamera", sensorA, sizeof(sensorA));
+  if (handleA == 0)
+  {
+    g_print("Couldn't create handleA\n");
+    exit(1);
+  }
+
+  //Initialize sensor stream with any sticky data
+  sprintf_s(txt, 80, "Sensor A");
+  GPMFWriteStreamStore(handleA, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  sprintf_s(txt, 80, "LB[6]"); // matching sensorAdata
+  GPMFWriteStreamStore(handleA, GPMF_KEY_TYPE, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+
+  //Flush any stale data before starting video capture.
+  GPMFWriteGetPayload(gpmfhandle, GPMF_CHANNEL_TIMED, (uint32_t *)buffer, sizeof(buffer), &payload, &payload_size);
+
+
+
+
+
   GstMessage *msg;
   GstStateChangeReturn ret;
   GstBus *bus;
