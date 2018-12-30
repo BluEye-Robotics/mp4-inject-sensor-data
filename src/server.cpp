@@ -45,6 +45,8 @@ inline uint64_t msNow(){
 
 size_t gpmfhandle = 0;
 size_t handleA;
+char buffer[8192];
+uint32_t *payload, payload_size;
 
 typedef struct sensorAdata  // Example 10-byte pack structure.
 {
@@ -61,13 +63,13 @@ static gboolean push_data (gpointer data) {
     return TRUE;
   before = now;
   g_print("i");
-  GstBuffer *buffer;
+  GstBuffer *gbuffer;
   GstFlowReturn ret;
 
   /* Create a new empty buffer */
-  buffer = gst_buffer_new();
+  gbuffer = gst_buffer_new();
 
-  //gst_buffer_fill(buffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
+  //gst_buffer_fill(gbuffer, 0, (gpointer)&((*buf)[0]), buf->size()); 
 
   //char b[4];
   //static uint64_t counter = 0;
@@ -78,8 +80,8 @@ static gboolean push_data (gpointer data) {
   //b[2] = 0x08;
   //b[3] = counter++ % 0xff;
   //GstMemory *mem = gst_allocator_alloc(NULL, strlen(b), NULL);
-  //gst_buffer_append_memory(buffer, mem);
-  //gst_buffer_fill(buffer, 0, b, strlen(b));
+  //gst_buffer_append_memory(gbuffer, mem);
+  //gst_buffer_fill(gbuffer, 0, b, strlen(b));
 
   uint32_t samples;
   uint32_t err;
@@ -100,25 +102,30 @@ static gboolean push_data (gpointer data) {
   err = GPMFWriteStreamStore(handleA, STR2FOURCC("SnrA"), GPMF_TYPE_COMPLEX, sizeof(sensorAdata), samples, Adata, GPMF_FLAGS_NONE);
   if (err) printf("err = %d\n", err);
 
-  device_metadata* p = (device_metadata*)handleA;
+  //device_metadata* p = (device_metadata*)handleA;
+  //GstMemory *mem = gst_allocator_alloc(NULL, p->payload_curr_size, NULL);
+  //gst_buffer_append_memory(gbuffer, mem);
+  //gst_buffer_fill(buffer, 0, p->payload_buffer, p->payload_alloc_size); //payload_curr_size);
 
-  GstMemory *mem = gst_allocator_alloc(NULL, p->payload_curr_size, NULL);
-  gst_buffer_append_memory(buffer, mem);
-  gst_buffer_fill(buffer, 0, p->payload_buffer, p->payload_alloc_size); //payload_curr_size);
+  GPMFWriteGetPayload(gpmfhandle, GPMF_CHANNEL_TIMED, (uint32_t *)buffer, sizeof(buffer), &payload, &payload_size);
+
+  GstMemory *mem = gst_allocator_alloc(NULL, payload_size, NULL);
+  gst_buffer_append_memory(gbuffer, mem);
+  gst_buffer_fill(gbuffer, 0, payload, payload_size); //payload_curr_size);
 
   static GstClockTime timestamp = 0;
   //GstClockTime timestamp = now - recording_beginning - 1;
   //timestamp *= 1e5;
-  GST_BUFFER_PTS (buffer) = timestamp;
-  GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, SAMPLE_RATE);
-  timestamp += GST_BUFFER_DURATION (buffer);
+  GST_BUFFER_PTS (gbuffer) = timestamp;
+  GST_BUFFER_DURATION (gbuffer) = gst_util_uint64_scale_int (1, GST_SECOND, SAMPLE_RATE);
+  timestamp += GST_BUFFER_DURATION (gbuffer);
   //g_print("\t%lu\t", timestamp);
 
   /* Push the buffer into the appsrc */
-  g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
+  g_signal_emit_by_name (appsrc, "push-buffer", gbuffer, &ret);
 
   /* Free the buffer now that we are done with it */
-  gst_buffer_unref (buffer);
+  gst_buffer_unref (gbuffer);
 
   if (ret != GST_FLOW_OK) {
     /* We got some error, stop sending data */
@@ -273,9 +280,7 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  char buffer[8192];
   char sensorA[4096];
-  uint32_t *payload, payload_size;
   uint32_t tmp,faketime,fakedata;
   char txt[80];
 
