@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <mutex>
 #include <stdio.h>
+#include <stdlib.h>
 #include <thread>
 #include <unistd.h>
 #include "sys/time.h"
@@ -28,7 +29,7 @@ guint sourceid = 0;        /* To control the GSource */
 uint64_t recording_beginning;
 
 #define CHUNK_SIZE 3   /* Amount of bytes we are sending in each buffer */
-#define SAMPLE_RATE 1 /* Samples per second we are sending */
+#define SAMPLE_RATE 200 /* Samples per second we are sending */
 
 inline uint64_t msNow(){
   struct timeval tp;
@@ -48,10 +49,11 @@ size_t handleA;
 char buffer[8192];
 uint32_t *payload, payload_size;
 
-typedef struct sensorAdata  // Example 10-byte pack structure.
+typedef struct sensorAdata
 {
-  uint32_t flags;
-  uint8_t ID[6];
+  float X;
+  float Y;
+  float Z;
 } sensorAdata;
 
 #pragma pack(pop)
@@ -59,10 +61,14 @@ typedef struct sensorAdata  // Example 10-byte pack structure.
 static gboolean push_data (gpointer data) {
   auto now = msNow();
   static auto before = now;
-  if (now - before < 1000)
+  if (now - before < 5)
     return TRUE;
   before = now;
+  size_t queued;
+  //g_object_get(appsrc, "current-level-bytes", &queued, NULL);
+  //g_print("i%d", queued);
   g_print("i");
+  g_object_set(src, "is-live", TRUE, NULL);
   GstBuffer *gbuffer;
   GstFlowReturn ret;
 
@@ -91,15 +97,11 @@ static gboolean push_data (gpointer data) {
   samples = 1 + (rand() % 3); //1-4 values
   for (uint32_t i = 0; i < samples; i++)
   {
-    Adata[i].flags = count++;
-    Adata[i].ID[0] = 1;
-    Adata[i].ID[1] = 2;
-    Adata[i].ID[2] = 3;
-    Adata[i].ID[3] = 4;
-    Adata[i].ID[4] = 5;
-    Adata[i].ID[5] = 6;
+    Adata[i].X = count;
+    Adata[i].Y = 2*count;
+    Adata[i].Z = .5*count++;
   }
-  err = GPMFWriteStreamStore(handleA, STR2FOURCC("SnrA"), GPMF_TYPE_COMPLEX, sizeof(sensorAdata), samples, Adata, GPMF_FLAGS_NONE);
+  err = GPMFWriteStreamStore(handleA, STR2FOURCC("ACCL"), GPMF_TYPE_COMPLEX, sizeof(sensorAdata), samples, Adata, GPMF_FLAGS_NONE);
   if (err) printf("err = %d\n", err);
 
   //device_metadata* p = (device_metadata*)handleA;
@@ -113,12 +115,13 @@ static gboolean push_data (gpointer data) {
   gst_buffer_append_memory(gbuffer, mem);
   gst_buffer_fill(gbuffer, 0, payload, payload_size); //payload_curr_size);
 
-  static GstClockTime timestamp = 0;
-  //GstClockTime timestamp = now - recording_beginning - 1;
-  //timestamp *= 1e5;
+  //static GstClockTime timestamp = 0;
+  GstClockTime timestamp = now - recording_beginning;
+  timestamp *= 1e6;
   GST_BUFFER_PTS (gbuffer) = timestamp;
+  //GST_BUFFER_DURATION (gbuffer) = GST_CLOCK_TIME_NONE;
   GST_BUFFER_DURATION (gbuffer) = gst_util_uint64_scale_int (1, GST_SECOND, SAMPLE_RATE);
-  timestamp += GST_BUFFER_DURATION (gbuffer);
+  //timestamp += GST_BUFFER_DURATION (gbuffer);
   //g_print("\t%lu\t", timestamp);
 
   /* Push the buffer into the appsrc */
@@ -254,7 +257,7 @@ bool startRecord()
                 "stream-type", 0, // GST_APP_STREAM_TYPE_STREAM 
                 "format", GST_FORMAT_TIME, 
                 "is-live", TRUE, 
-                "do-timestamp", TRUE,
+                //"do-timestamp", TRUE,
                 NULL); 
 
   gst_bin_add_many(GST_BIN(pipeline), appsrc, NULL);
@@ -273,6 +276,7 @@ bool startRecord()
 
 int main(int argc, char *argv[])
 {
+  srand (time(NULL));
   gpmfhandle = GPMFWriteServiceInit();
   if (gpmfhandle == 0)
   {
@@ -294,7 +298,7 @@ int main(int argc, char *argv[])
   //Initialize sensor stream with any sticky data
   sprintf_s(txt, 80, "Sensor A");
   GPMFWriteStreamStore(handleA, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
-  sprintf_s(txt, 80, "LB[6]"); // matching sensorAdata
+  sprintf_s(txt, 80, "f[3]"); // matching sensorAdata
   GPMFWriteStreamStore(handleA, GPMF_KEY_TYPE, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
 
   //Flush any stale data before starting video capture.
