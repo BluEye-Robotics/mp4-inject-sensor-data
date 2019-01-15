@@ -23,12 +23,10 @@ GstElement *record_queue, *mp4mux, *probe_queue, *filesink, *enc;
 GstElement *appsrc;
 GstElement *audioenc;
 
-guint64 num_samples;   /* Number of samples generated so far (for timestamp generation) */
 guint sourceid = 0;        /* To control the GSource */
 
 uint64_t recording_beginning;
 
-#define CHUNK_SIZE 3   /* Amount of bytes we are sending in each buffer */
 #define SAMPLE_RATE 200 /* Samples per second we are sending */
 
 inline uint64_t msNow(){
@@ -45,16 +43,10 @@ inline uint64_t msNow(){
 #pragma pack(1)   //GPMF sensor data structures are always byte packed.
 
 size_t gpmfhandle = 0;
-size_t handleA;
+size_t handleACCL;
+size_t handleGPS;
 char buffer[8192];
 uint32_t *payload, payload_size;
-
-typedef struct sensorAdata
-{
-  float X;
-  float Y;
-  float Z;
-} sensorAdata;
 
 #pragma pack(pop)
 
@@ -89,27 +81,50 @@ static gboolean push_data (gpointer data) {
   //gst_buffer_append_memory(gbuffer, mem);
   //gst_buffer_fill(gbuffer, 0, b, strlen(b));
 
-  uint32_t samples;
   uint32_t err;
-  sensorAdata Adata[4];
+  uint16_t acc[6];
   static uint32_t count = 0;
-
-  samples = 1 + (rand() % 3); //1-4 values
-  for (uint32_t i = 0; i < samples; i++)
+  for (uint32_t i = 0; i < 6; i++)
   {
-    Adata[i].X = count;
-    Adata[i].Y = 2*count;
-    Adata[i].Z = .5*count++;
+    acc[i] = count++;
   }
-  err = GPMFWriteStreamStore(handleA, STR2FOURCC("ACCL"), GPMF_TYPE_COMPLEX, sizeof(sensorAdata), samples, Adata, GPMF_FLAGS_NONE);
+  err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("ACCL"), 's', 3*sizeof(int16_t), 2, &acc, GPMF_FLAGS_NONE);
   if (err) printf("err = %d\n", err);
 
-  //device_metadata* p = (device_metadata*)handleA;
+
+  static int32_t lat = 331264969;
+  static int32_t lng = -1173273542;
+  int32_t gps[20] = {
+    lat++, lng++, -20184, 167, 19,
+    lat++, lng++, -20184, 167, 19,
+    lat++, lng++, -20184, 167, 19,
+    lat++, lng++, -20184, 167, 19,
+  };
+  err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPS5"), 'l', 5*sizeof(int32_t), 4, &gps, GPMF_FLAGS_NONE);
+  if (err) printf("err = %d\n", err);
+
+  
+
+  //device_metacc* p = (device_metacc*)handleACCL;
   //GstMemory *mem = gst_allocator_alloc(NULL, p->payload_curr_size, NULL);
   //gst_buffer_append_memory(gbuffer, mem);
   //gst_buffer_fill(buffer, 0, p->payload_buffer, p->payload_alloc_size); //payload_curr_size);
 
   GPMFWriteGetPayload(gpmfhandle, GPMF_CHANNEL_TIMED, (uint32_t *)buffer, sizeof(buffer), &payload, &payload_size);
+
+  //printf("payload_size = %d\n", payload_size);
+
+  ////Using the GPMF_Parser, output some of the contents
+  //GPMF_stream gs;
+  //if (GPMF_OK == GPMF_Init(&gs, payload, payload_size))
+  //{
+  //  GPMF_ResetState(&gs);
+  //  do
+  //  { 
+  //    PrintGPMF(&gs);  // printf current GPMF KLV
+  //  } while (GPMF_OK == GPMF_Next(&gs, GPMF_RECURSE_LEVELS));
+  //}
+  //printf("\n");
 
   GstMemory *mem = gst_allocator_alloc(NULL, payload_size, NULL);
   gst_buffer_append_memory(gbuffer, mem);
@@ -159,7 +174,7 @@ void shutdown(int signum)
   g_source_remove (sourceid);
   gst_element_send_event(enc, gst_event_new_eos());
   gst_element_send_event(appsrc, gst_event_new_eos());
-  GPMFWriteStreamClose(handleA);
+  GPMFWriteStreamClose(handleACCL);
   GPMFWriteServiceClose(gpmfhandle);
   //gst_element_send_event(pipeline, gst_event_new_eos());
   //exit(signum);
@@ -285,24 +300,67 @@ int main(int argc, char *argv[])
   }
 
   char sensorA[4096];
-  uint32_t tmp,faketime,fakedata;
+  int16_t s;
+  float f;
   char txt[80];
+  uint32_t err;
 
-  handleA = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "MyCamera", sensorA, sizeof(sensorA));
-  if (handleA == 0)
+  handleACCL = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Camera", sensorA, sizeof(sensorA));
+  if (handleACCL == 0)
   {
-    g_print("Couldn't create handleA\n");
+    g_print("Couldn't create handleACCL\n");
+    exit(1);
+  }
+  handleGPS = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Camera", NULL, 0);
+  if (handleGPS == 0)
+  {
+    g_print("Couldn't create handleGPS\n");
     exit(1);
   }
 
   //Initialize sensor stream with any sticky data
-  sprintf_s(txt, 80, "Sensor A");
-  GPMFWriteStreamStore(handleA, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
-  sprintf_s(txt, 80, "f[3]"); // matching sensorAdata
-  GPMFWriteStreamStore(handleA, GPMF_KEY_TYPE, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  sprintf_s(txt, 80, "Accelerometer (up/down, right/left, forward/back)");
+  err = GPMFWriteStreamStore(handleACCL, GPMF_KEY_STREAM_NAME, 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
+  sprintf_s(txt, 80, "m/s");
+  err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("SIUN"), 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
+  s = 418;
+  err = GPMFWriteStreamStore(handleACCL, GPMF_KEY_SCALE, 's', sizeof(s), 1, &s, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
+  f = 31.5;
+  err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("TMPC"), 'f', sizeof(f), 1, &f, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
+
+  //sprintf_s(txt, 80, "Gyroscope (z,x,y)");
+  //GPMFWriteStreamStore(handleGYRO, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  //sprintf_s(txt, 80, "rad/s");
+  //GPMFWriteStreamStore(handleGYRO, STR2FOURCC("SIUN"), 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  //s = 3755;
+  //GPMFWriteStreamStore(handleGYRO, GPMF_KEY_SCALE, 's', sizeof(s), 1, &s, GPMF_FLAGS_STICKY);
+  //f = 31.5;
+  //GPMFWriteStreamStore(handleGYRO, STR2FOURCC("TMPC"), 'f', sizeof(f), 1, &f, GPMF_FLAGS_STICKY);
+
+  uint32_t L = 3;
+  GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSF"), 'L', sizeof(L), 1, &s, GPMF_FLAGS_STICKY);
+  char utcdata[17] = "180114170203.000";
+  GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSU"), 'U', 16*sizeof(char), 1, &utcdata, GPMF_FLAGS_STICKY);
+  sprintf_s(txt, 80, "GPS (Lat., Long., Alt., 2D speed, 3D speed)");
+  err = GPMFWriteStreamStore(handleGPS, GPMF_KEY_STREAM_NAME, 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
+  uint32_t ss[5] = {10000000, 10000000, 1000, 1000, 100};
+  err = GPMFWriteStreamStore(handleGPS, GPMF_KEY_SCALE, 'l', sizeof(uint32_t), 5, ss, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
+  uint16_t S = 606;
+  err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSP"), 'S', sizeof(uint16_t), 1, &S, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
+  sprintf_s(txt, 80, "degdegdegdegdeg");
+  err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("UNIT"), 'c', 3*sizeof(char), 5, &txt, GPMF_FLAGS_STICKY);
+  if (err) printf("err = %d\n", err);
 
   //Flush any stale data before starting video capture.
-  GPMFWriteGetPayload(gpmfhandle, GPMF_CHANNEL_TIMED, (uint32_t *)buffer, sizeof(buffer), &payload, &payload_size);
+  err = GPMFWriteGetPayload(gpmfhandle, GPMF_CHANNEL_TIMED, (uint32_t *)buffer, sizeof(buffer), &payload, &payload_size);
+  if (err) printf("err = %d\n", err);
 
 
 
