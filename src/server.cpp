@@ -27,7 +27,7 @@ guint sourceid = 0;        /* To control the GSource */
 
 uint64_t recording_beginning;
 
-#define SAMPLE_RATE 200 /* Samples per second we are sending */
+#define SAMPLE_RATE 1 /* Samples per second we are sending */
 
 inline uint64_t msNow(){
   struct timeval tp;
@@ -44,7 +44,10 @@ inline uint64_t msNow(){
 
 size_t gpmfhandle = 0;
 size_t handleACCL;
+size_t handleGYRO;
 size_t handleGPS;
+size_t handleISOG;
+size_t handleSHUT;
 char buffer[8192];
 uint32_t *payload, payload_size;
 
@@ -53,14 +56,13 @@ uint32_t *payload, payload_size;
 static gboolean push_data (gpointer data) {
   auto now = msNow();
   static auto before = now;
-  if (now - before < 5)
+  if (now - before < 1000)
     return TRUE;
   before = now;
   size_t queued;
   //g_object_get(appsrc, "current-level-bytes", &queued, NULL);
   //g_print("i%d", queued);
   g_print("i");
-  g_object_set(src, "is-live", TRUE, NULL);
   GstBuffer *gbuffer;
   GstFlowReturn ret;
 
@@ -81,29 +83,69 @@ static gboolean push_data (gpointer data) {
   //gst_buffer_append_memory(gbuffer, mem);
   //gst_buffer_fill(gbuffer, 0, b, strlen(b));
 
-  uint32_t err;
-  uint16_t acc[6];
   static uint32_t count = 0;
-  for (uint32_t i = 0; i < 6; i++)
+  ++count;
+  uint32_t err;
+
+  //int16_t acc[200*3];
+  //for (int16_t i = 0; i < 200*3; i+=3)
+  //{
+  //  acc[i] = 0; //4078;
+  //  acc[i+1] = 0; // -20;
+  //  acc[i+2] = 0; // -536;
+  //}
+  //err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("ACCL"), 's', 3*sizeof(int16_t), 200, &acc, GPMF_FLAGS_NONE);
+  //if (err) printf("err = %d\n", err);
+
+  //int16_t gyro[200*3];
+  //for (int16_t i = 0; i < 200*3; i++)
+  //{
+  //  gyro[i] = 0;
+  //}
+  //err = GPMFWriteStreamStore(handleGYRO, STR2FOURCC("GYRO"), 's', 3*sizeof(int16_t), 63, &gyro, GPMF_FLAGS_NONE);
+  //if (err) printf("err = %d\n", err);
+
+  static int32_t lat = 406450466;
+  static int32_t lng = -740687085;
+  ++lat;
+  ++lng;
+  //if (count % 64 < 32)
+  //{
+  //  ++lat;
+  //  ++lng;
+  //}
+  //else
+  //{
+  //  --lat;
+  //  --lng;
+  //}
+  int32_t gps[18*5];
+  for (uint32_t i = 0; i < 18*5; i+=5)
   {
-    acc[i] = count++;
+    gps[i] = lat;
+    gps[i+1] = lng;
+    gps[i+2] = -33035;
+    gps[i+3] = 0;
+    gps[i+4] = 0;
   }
-  err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("ACCL"), 's', 3*sizeof(int16_t), 2, &acc, GPMF_FLAGS_NONE);
+  err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPS5"), 'l', 5*sizeof(int32_t), 18, &gps, GPMF_FLAGS_NONE);
   if (err) printf("err = %d\n", err);
 
+  //float isog[4];
+  //for (uint32_t i = 0; i < 4; i++)
+  //{
+  //  isog[i] = 1.414;
+  //}
+  //err = GPMFWriteStreamStore(handleISOG, STR2FOURCC("ISOG"), 'f', 1*sizeof(float), 4, &isog, GPMF_FLAGS_NONE);
+  //if (err) printf("err = %d\n", err);
 
-  static int32_t lat = 331264969;
-  static int32_t lng = -1173273542;
-  int32_t gps[20] = {
-    lat++, lng++, -20184, 167, 19,
-    lat++, lng++, -20184, 167, 19,
-    lat++, lng++, -20184, 167, 19,
-    lat++, lng++, -20184, 167, 19,
-  };
-  err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPS5"), 'l', 5*sizeof(int32_t), 4, &gps, GPMF_FLAGS_NONE);
-  if (err) printf("err = %d\n", err);
-
-  
+  //float shut[4];
+  //for (uint32_t i = 0; i < 4; i++)
+  //{
+  //  shut[i] = 0;
+  //}
+  //err = GPMFWriteStreamStore(handleSHUT, STR2FOURCC("SHUT"), 'f', 1*sizeof(float), 4, &shut, GPMF_FLAGS_NONE);
+  //if (err) printf("err = %d\n", err);
 
   //device_metacc* p = (device_metacc*)handleACCL;
   //GstMemory *mem = gst_allocator_alloc(NULL, p->payload_curr_size, NULL);
@@ -174,7 +216,9 @@ void shutdown(int signum)
   g_source_remove (sourceid);
   gst_element_send_event(enc, gst_event_new_eos());
   gst_element_send_event(appsrc, gst_event_new_eos());
-  GPMFWriteStreamClose(handleACCL);
+  //GPMFWriteStreamClose(handleACCL);
+  //GPMFWriteStreamClose(handleGYRO);
+  GPMFWriteStreamClose(handleGPS);
   GPMFWriteServiceClose(gpmfhandle);
   //gst_element_send_event(pipeline, gst_event_new_eos());
   //exit(signum);
@@ -251,6 +295,7 @@ bool startRecord()
 
   //g_object_set(src, "device", "/dev/video0", NULL);
   g_object_set(src, "is-live", TRUE, NULL);
+  //g_object_set(src, "pattern", 2, NULL);
 
   g_object_set(filesink, "location", "out.mp4", NULL);
 
@@ -305,32 +350,50 @@ int main(int argc, char *argv[])
   char txt[80];
   uint32_t err;
 
-  handleACCL = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Camera", sensorA, sizeof(sensorA));
-  if (handleACCL == 0)
-  {
-    g_print("Couldn't create handleACCL\n");
-    exit(1);
-  }
-  handleGPS = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Camera", NULL, 0);
+  //handleACCL = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Hero5 Black", sensorA, sizeof(sensorA));
+  //if (handleACCL == 0)
+  //{
+  //  g_print("Couldn't create handleACCL\n");
+  //  exit(1);
+  //}
+  //handleGYRO = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Hero5 Black", NULL, 0);
+  //if (handleGYRO == 0)
+  //{
+  //  g_print("Couldn't create handleGYRO\n");
+  //  exit(1);
+  //}
+  handleGPS = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Hero5 Black", NULL, 0);
   if (handleGPS == 0)
   {
     g_print("Couldn't create handleGPS\n");
     exit(1);
   }
+  //handleISOG = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Hero5 Black", NULL, 0);
+  //if (handleISOG == 0)
+  //{
+  //  g_print("Couldn't create handleISOG\n");
+  //  exit(1);
+  //}
+  //handleSHUT = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Hero5 Black", NULL, 0);
+  //if (handleSHUT == 0)
+  //{
+  //  g_print("Couldn't create handleSHUT\n");
+  //  exit(1);
+  //}
 
   //Initialize sensor stream with any sticky data
-  sprintf_s(txt, 80, "Accelerometer (up/down, right/left, forward/back)");
-  err = GPMFWriteStreamStore(handleACCL, GPMF_KEY_STREAM_NAME, 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
-  if (err) printf("err = %d\n", err);
-  sprintf_s(txt, 80, "m/s");
-  err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("SIUN"), 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
-  if (err) printf("err = %d\n", err);
-  s = 418;
-  err = GPMFWriteStreamStore(handleACCL, GPMF_KEY_SCALE, 's', sizeof(s), 1, &s, GPMF_FLAGS_STICKY);
-  if (err) printf("err = %d\n", err);
-  f = 31.5;
-  err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("TMPC"), 'f', sizeof(f), 1, &f, GPMF_FLAGS_STICKY);
-  if (err) printf("err = %d\n", err);
+  //sprintf_s(txt, 80, "Accelerometer (up/down, right/left, forward/back)");
+  //err = GPMFWriteStreamStore(handleACCL, GPMF_KEY_STREAM_NAME, 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  //if (err) printf("err = %d\n", err);
+  //sprintf_s(txt, 80, "m/s");
+  //err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("SIUN"), 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  //if (err) printf("err = %d\n", err);
+  //s = 418;
+  //err = GPMFWriteStreamStore(handleACCL, GPMF_KEY_SCALE, 's', sizeof(s), 1, &s, GPMF_FLAGS_STICKY);
+  //if (err) printf("err = %d\n", err);
+  //f = 31.5;
+  //err = GPMFWriteStreamStore(handleACCL, STR2FOURCC("TMPC"), 'f', sizeof(f), 1, &f, GPMF_FLAGS_STICKY);
+  //if (err) printf("err = %d\n", err);
 
   //sprintf_s(txt, 80, "Gyroscope (z,x,y)");
   //GPMFWriteStreamStore(handleGYRO, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
@@ -341,22 +404,32 @@ int main(int argc, char *argv[])
   //f = 31.5;
   //GPMFWriteStreamStore(handleGYRO, STR2FOURCC("TMPC"), 'f', sizeof(f), 1, &f, GPMF_FLAGS_STICKY);
 
-  uint32_t L = 3;
-  GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSF"), 'L', sizeof(L), 1, &s, GPMF_FLAGS_STICKY);
-  char utcdata[17] = "180114170203.000";
-  GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSU"), 'U', 16*sizeof(char), 1, &utcdata, GPMF_FLAGS_STICKY);
+  int32_t L = 3;
+  GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSF"), 'L', sizeof(L), 1, &L, GPMF_FLAGS_STICKY);
+  char utcdata[17] = "170620125052.515";
+  GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSU"), 'c', 16*sizeof(char), 1, &utcdata, GPMF_FLAGS_STICKY);
   sprintf_s(txt, 80, "GPS (Lat., Long., Alt., 2D speed, 3D speed)");
   err = GPMFWriteStreamStore(handleGPS, GPMF_KEY_STREAM_NAME, 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
   if (err) printf("err = %d\n", err);
   uint32_t ss[5] = {10000000, 10000000, 1000, 1000, 100};
   err = GPMFWriteStreamStore(handleGPS, GPMF_KEY_SCALE, 'l', sizeof(uint32_t), 5, ss, GPMF_FLAGS_STICKY);
   if (err) printf("err = %d\n", err);
-  uint16_t S = 606;
+  uint16_t S = 372;
   err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSP"), 'S', sizeof(uint16_t), 1, &S, GPMF_FLAGS_STICKY);
   if (err) printf("err = %d\n", err);
-  sprintf_s(txt, 80, "degdegdegdegdeg");
+  sprintf_s(txt, 80, "degdegmAAm/sm/s");
+  txt[7] = '\0';
+  txt[8] = '\0';
   err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("UNIT"), 'c', 3*sizeof(char), 5, &txt, GPMF_FLAGS_STICKY);
   if (err) printf("err = %d\n", err);
+
+  //sprintf_s(txt, 80, "Sensor gain (ISO x100)");
+  //GPMFWriteStreamStore(handleISOG, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+
+  //sprintf_s(txt, 80, "Exposure time (shutter speed)");
+  //GPMFWriteStreamStore(handleSHUT, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  //sprintf_s(txt, 80, "s");
+  //GPMFWriteStreamStore(handleSHUT, STR2FOURCC("SIUN"), 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
 
   //Flush any stale data before starting video capture.
   err = GPMFWriteGetPayload(gpmfhandle, GPMF_CHANNEL_TIMED, (uint32_t *)buffer, sizeof(buffer), &payload, &payload_size);
