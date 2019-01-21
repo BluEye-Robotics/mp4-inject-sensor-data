@@ -1,10 +1,8 @@
 // Copyright 2018 Blueye Robotics AS
 #include <gst/gst.h>
-#include <gst/audio/audio.h>
 #include <signal.h>
 #include <blkid/blkid.h>
 #include <sys/stat.h>
-#include <mutex>
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
@@ -16,12 +14,10 @@
 GMainLoop *loop = NULL;
 
 
-GstPad *tee_pad;
-GstPad *record_queue_pad, *display_queue_pad;
-GstElement *pipeline, *src;
-GstElement *record_queue, *mp4mux, *probe_queue, *filesink, *enc;
+GstElement *pipeline;
+GstElement *enc;
+GstElement *mp4mux, *filesink;
 GstElement *appsrc;
-GstElement *audioenc;
 
 guint sourceid = 0;        /* To control the GSource */
 
@@ -46,8 +42,8 @@ size_t gpmfhandle = 0;
 size_t handleACCL;
 size_t handleGYRO;
 size_t handleGPS;
-size_t handleISOG;
-size_t handleSHUT;
+//size_t handleISOG;
+//size_t handleSHUT;
 char buffer[8192];
 uint32_t *payload, payload_size;
 
@@ -295,33 +291,30 @@ static gboolean bus_message (GstBus * bus, GstMessage * msg, gpointer user_data)
   return TRUE;
 }
 
-bool startRecord()
+bool create_pipeline()
 {
-  g_print("startRecord\n");
-  src = gst_element_factory_make("videotestsrc", "src");
-  record_queue = gst_element_factory_make("queue", "record_queue");
-  enc = gst_element_factory_make("x264enc", "enc");
-  probe_queue = gst_element_factory_make("queue", "probe_queue");
-  mp4mux = gst_element_factory_make("mp4mux", NULL);
-  filesink = gst_element_factory_make("filesink", NULL);
+  g_print("create_pipeline\n");
 
-  //g_object_set(src, "device", "/dev/video0", NULL);
-  g_object_set(src, "is-live", TRUE, NULL);
+  std::string launch_string = 
+    "videotestsrc is-live=true"
+    " ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=0"
+    " ! x264enc name=enc"
+    " ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=0"
+    " ! taginject name=taginject"
+    " ! mp4mux name=mp4mux"
+    " ! filesink name=filesink location=out.mp4";
+  g_print("launch_string: %s\n", launch_string.c_str());
   //g_object_set(src, "pattern", 2, NULL);
 
-  g_object_set(filesink, "location", "out.mp4", NULL);
+  pipeline = gst_parse_launch (launch_string.c_str(), NULL);
 
-  g_object_set(G_OBJECT(record_queue), "max-size-bytes", 0, "max-size-time", (guint64) 3 * GST_SECOND, "max-size-buffers", 0, "leaky", 2, NULL);
-  g_object_set(G_OBJECT(probe_queue), "max-size-bytes", 0, "max-size-time", (guint64) 3 * GST_SECOND, "max-size-buffers", 0, "leaky", 2, NULL);
+  enc = gst_bin_get_by_name(GST_BIN(pipeline), "enc");
 
-  gst_bin_add_many(GST_BIN(pipeline), src, record_queue, enc, probe_queue, mp4mux, NULL);
-  gst_element_link_many(src, record_queue, enc, probe_queue, mp4mux, NULL);
-
+  mp4mux = gst_bin_get_by_name(GST_BIN(pipeline), "mp4mux");
+  filesink = gst_bin_get_by_name(GST_BIN(pipeline), "filesink");
 
   appsrc = gst_element_factory_make("appsrc", NULL);
   GstCaps *caps = gst_caps_from_string("text/x-raw, format=(string)utf8");
-  //appsrc = gst_element_factory_make("autoaudiosrc", NULL);
-  //audioenc = gst_element_factory_make("faac", NULL);
 
   /* Configure appsrc */
   g_object_set (appsrc, "caps", caps, NULL);
@@ -333,7 +326,6 @@ bool startRecord()
                 NULL); 
 
   gst_bin_add_many(GST_BIN(pipeline), appsrc, NULL);
-  //gst_element_link_many(appsrc, mp4mux, NULL);
   {
     GstPad *srcpad = gst_element_get_static_pad(appsrc, "src");
     GstPad *sinkpad = gst_element_get_request_pad(mp4mux, "gpmf_0");
@@ -348,7 +340,6 @@ bool startRecord()
 
 int main(int argc, char *argv[])
 {
-  srand (time(NULL));
   gpmfhandle = GPMFWriteServiceInit();
   if (gpmfhandle == 0)
   {
@@ -421,7 +412,7 @@ int main(int argc, char *argv[])
 
   uint32_t L = 0;
   GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSF"), 'L', sizeof(L), 1, &L, GPMF_FLAGS_STICKY);
-  char utcdata[17] = "170620120000.515";
+  char utcdata[17] = "180120221500.515";
   GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSU"), 'c', 16*sizeof(char), 1, &utcdata, GPMF_FLAGS_STICKY);
   //sprintf_s(txt, 80, "GPS (Lat., Long., Alt., 2D speed, 3D speed)");
   //err = GPMFWriteStreamStore(handleGPS, GPMF_KEY_STREAM_NAME, 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
@@ -453,11 +444,6 @@ int main(int argc, char *argv[])
 
 
 
-
-  GstMessage *msg;
-  GstStateChangeReturn ret;
-  GstBus *bus;
-
   loop = g_main_loop_new (NULL, TRUE);
 
 
@@ -465,14 +451,13 @@ int main(int argc, char *argv[])
 
   pipeline = gst_pipeline_new("test-pipeline");
 
-  startRecord();
+  create_pipeline();
 
-  bus = gst_pipeline_get_bus (GST_PIPELINE(pipeline));
+  GstBus *bus = gst_pipeline_get_bus (GST_PIPELINE(pipeline));
   gst_bus_add_watch (bus, (GstBusFunc) bus_message, NULL);
   gst_object_unref(bus);
 
 
-  //g_signal_connect (appsrc, "need-data", G_CALLBACK (cb_need_data), NULL);
   g_signal_connect (appsrc, "need-data", G_CALLBACK (start_feed), NULL);
   g_signal_connect (appsrc, "enough-data", G_CALLBACK (stop_feed), NULL);
 
