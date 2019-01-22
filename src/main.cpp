@@ -15,7 +15,6 @@ GMainLoop *loop = NULL;
 
 
 GstElement *pipeline;
-GstElement *enc;
 GstElement *mp4mux, *filesink;
 GstElement *appsrc;
 
@@ -222,13 +221,11 @@ void shutdown(int signum)
 {
   g_print("exit(%d)\n", signum);
   g_source_remove (sourceid);
-  gst_element_send_event(enc, gst_event_new_eos());
-  gst_element_send_event(appsrc, gst_event_new_eos());
+  gst_element_send_event(pipeline, gst_event_new_eos());
   GPMFWriteStreamClose(handleACCL);
   GPMFWriteStreamClose(handleGYRO);
   GPMFWriteStreamClose(handleGPS);
   GPMFWriteServiceClose(gpmfhandle);
-  //gst_element_send_event(pipeline, gst_event_new_eos());
   //exit(signum);
 }
 
@@ -297,18 +294,18 @@ bool create_pipeline()
 
   std::string launch_string = 
     "videotestsrc is-live=true"
+    //"filesrc location=in.mp4"
+    //" ! qtdemux ! h264parse"
+    //" ! tee name=t ! queue ! fakesink name=fakesink sync=true t."
     " ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=0"
-    " ! x264enc name=enc"
-    " ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=0"
-    " ! taginject name=taginject"
+    //" ! taginject name=taginject"
+    " ! x264enc"
     " ! mp4mux name=mp4mux"
     " ! filesink name=filesink location=out.mp4";
   g_print("launch_string: %s\n", launch_string.c_str());
   //g_object_set(src, "pattern", 2, NULL);
 
   pipeline = gst_parse_launch (launch_string.c_str(), NULL);
-
-  enc = gst_bin_get_by_name(GST_BIN(pipeline), "enc");
 
   mp4mux = gst_bin_get_by_name(GST_BIN(pipeline), "mp4mux");
   filesink = gst_bin_get_by_name(GST_BIN(pipeline), "filesink");
@@ -331,9 +328,6 @@ bool create_pipeline()
     GstPad *sinkpad = gst_element_get_request_pad(mp4mux, "gpmf_0");
     gst_pad_link (srcpad, sinkpad);
   }
-
-  gst_bin_add_many(GST_BIN(pipeline), filesink, NULL);
-  gst_element_link_many(mp4mux, filesink, NULL);
 
   return true;
 }
