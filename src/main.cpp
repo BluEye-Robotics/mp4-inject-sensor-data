@@ -107,7 +107,7 @@ static gboolean push_data (gpointer data) {
   static int32_t alt = -33035;
   ++lat;
   ++lng;
-  --alt;
+  alt-=1000;
   //if (count % 64 < 32)
   //{
   //  ++lat;
@@ -132,8 +132,8 @@ static gboolean push_data (gpointer data) {
     gps[i] = lat;
     gps[i+1] = lng;
     gps[i+2] = alt;
-    gps[i+3] = 0;
-    gps[i+4] = 0;
+    gps[i+3] = 15;
+    gps[i+4] = 50;
   }
   err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPS5"), 'l', 5*sizeof(int32_t), 18, &gps, GPMF_FLAGS_NONE);
   if (err) printf("err = %d\n", err);
@@ -411,7 +411,7 @@ int main(int argc, char *argv[])
   //sprintf_s(txt, 80, "GPS (Lat., Long., Alt., 2D speed, 3D speed)");
   //err = GPMFWriteStreamStore(handleGPS, GPMF_KEY_STREAM_NAME, 'c', strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
   //if (err) printf("err = %d\n", err);
-  uint16_t S = 9999;
+  uint16_t S = 240;
   err = GPMFWriteStreamStore(handleGPS, STR2FOURCC("GPSP"), 'S', sizeof(S), 1, &S, GPMF_FLAGS_STICKY);
   if (err) printf("err = %d\n", err);
   sprintf_s(txt, 80, "degdegmAAm/sm/s");
