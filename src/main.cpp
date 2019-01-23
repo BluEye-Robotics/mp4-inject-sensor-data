@@ -10,6 +10,7 @@
 #include "sys/time.h"
 #include "GPMF_common.h"
 #include "GPMF_writer.h"
+#include "cmath"
 
 GMainLoop *loop = NULL;
 
@@ -41,7 +42,7 @@ size_t gpmfhandle = 0;
 size_t handleACCL;
 size_t handleGYRO;
 size_t handleGPS;
-//size_t handleISOG;
+size_t handleISOG;
 //size_t handleSHUT;
 char buffer[8192];
 uint32_t *payload, payload_size;
@@ -105,9 +106,8 @@ static gboolean push_data (gpointer data) {
   static int32_t lat = 406450466;
   static int32_t lng = -740687085;
   static int32_t alt = -33035;
-  ++lat;
-  ++lng;
-  alt-=1000;
+  static float   angle = 0;
+  static uint32_t radius = 1;
   //if (count % 64 < 32)
   //{
   //  ++lat;
@@ -129,6 +129,13 @@ static gboolean push_data (gpointer data) {
   int32_t gps[18*5];
   for (uint32_t i = 0; i < 18*5; i+=5)
   {
+    radius += 1;
+    angle += .1;
+
+    lat = 406450466 + radius * cos(angle);
+    lng = -740687085 + radius * sin(angle);
+    alt-=100;
+
     gps[i] = lat;
     gps[i+1] = lng;
     gps[i+2] = alt;
@@ -293,13 +300,13 @@ bool create_pipeline()
   g_print("create_pipeline\n");
 
   std::string launch_string = 
-    "videotestsrc is-live=true"
-    //"filesrc location=in.mp4"
-    //" ! qtdemux ! h264parse"
-    //" ! tee name=t ! queue ! fakesink name=fakesink sync=true t."
+    //"videotestsrc is-live=true"
+    "filesrc location=in.mp4"
+    " ! qtdemux ! h264parse"
+    " ! tee name=t ! queue ! fakesink name=fakesink sync=true t."
     " ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=0"
     //" ! taginject name=taginject"
-    " ! x264enc"
+    //" ! x264enc"
     " ! mp4mux name=mp4mux"
     " ! filesink name=filesink location=out.mp4";
   g_print("launch_string: %s\n", launch_string.c_str());
@@ -367,12 +374,12 @@ int main(int argc, char *argv[])
     g_print("Couldn't create handleGPS\n");
     exit(1);
   }
-  //handleISOG = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Camera", NULL, 0);
-  //if (handleISOG == 0)
-  //{
-  //  g_print("Couldn't create handleISOG\n");
-  //  exit(1);
-  //}
+  handleISOG = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Camera", NULL, 0);
+  if (handleISOG == 0)
+  {
+    g_print("Couldn't create handleISOG\n");
+    exit(1);
+  }
   //handleSHUT = GPMFWriteStreamOpen(gpmfhandle, GPMF_CHANNEL_TIMED, GPMF_DEVICE_ID_CAMERA, "Camera", NULL, 0);
   //if (handleSHUT == 0)
   //{
@@ -423,8 +430,10 @@ int main(int argc, char *argv[])
   err = GPMFWriteStreamStore(handleGPS, GPMF_KEY_SCALE, 'l', sizeof(int32_t), 5, ss, GPMF_FLAGS_STICKY);
   if (err) printf("err = %d\n", err);
 
-  //sprintf_s(txt, 80, "Sensor gain (ISO x100)");
-  //GPMFWriteStreamStore(handleISOG, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  sprintf_s(txt, 80, "Sensor gain (ISO x100)");
+  GPMFWriteStreamStore(handleISOG, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
+  S = 500;
+  err = GPMFWriteStreamStore(handleISOG, STR2FOURCC("NANA"), 'S', sizeof(S), 1, &S, GPMF_FLAGS_STICKY);
 
   //sprintf_s(txt, 80, "Exposure time (shutter speed)");
   //GPMFWriteStreamStore(handleSHUT, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
