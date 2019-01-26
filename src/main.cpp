@@ -300,13 +300,13 @@ bool create_pipeline()
   g_print("create_pipeline\n");
 
   std::string launch_string = 
-    //"videotestsrc is-live=true"
-    "filesrc location=in.mp4"
-    " ! qtdemux ! h264parse"
-    " ! tee name=t ! queue ! fakesink name=fakesink sync=true t."
-    " ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=0"
+    "videotestsrc is-live=true"
+    //"filesrc location=in.mp4"
+    //" ! qtdemux ! h264parse"
+    //" ! tee name=t ! queue ! fakesink name=fakesink sync=true t."
+    //" ! queue max-size-bytes=0 max-size-time=0 max-size-buffers=0"
     //" ! taginject name=taginject"
-    //" ! x264enc"
+    " ! x264enc"
     " ! mp4mux name=mp4mux"
     " ! filesink name=filesink location=out.mp4";
   g_print("launch_string: %s\n", launch_string.c_str());
@@ -318,7 +318,10 @@ bool create_pipeline()
   filesink = gst_bin_get_by_name(GST_BIN(pipeline), "filesink");
 
   appsrc = gst_element_factory_make("appsrc", NULL);
-  GstCaps *caps = gst_caps_from_string("text/x-raw, format=(string)utf8");
+  GstCaps *caps = gst_caps_new_simple("meta/x-raw",
+    "fourcc", G_TYPE_STRING, "gpmd",
+    "hdlr-name", G_TYPE_STRING, "\tGoPro MET",
+    NULL);
 
   /* Configure appsrc */
   g_object_set (appsrc, "caps", caps, NULL);
@@ -332,7 +335,7 @@ bool create_pipeline()
   gst_bin_add_many(GST_BIN(pipeline), appsrc, NULL);
   {
     GstPad *srcpad = gst_element_get_static_pad(appsrc, "src");
-    GstPad *sinkpad = gst_element_get_request_pad(mp4mux, "gpmf_0");
+    GstPad *sinkpad = gst_element_get_request_pad(mp4mux, "meta_0");
     gst_pad_link (srcpad, sinkpad);
   }
 
@@ -433,7 +436,7 @@ int main(int argc, char *argv[])
   sprintf_s(txt, 80, "Sensor gain (ISO x100)");
   GPMFWriteStreamStore(handleISOG, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
   S = 500;
-  err = GPMFWriteStreamStore(handleISOG, STR2FOURCC("NANA"), 'S', sizeof(S), 1, &S, GPMF_FLAGS_STICKY);
+  err = GPMFWriteStreamStore(handleISOG, STR2FOURCC("NANA"), 'S', sizeof(S), 1, &S, GPMF_FLAGS_STICKY); // Non GoPro field to check if it gets recognized in any clients
 
   //sprintf_s(txt, 80, "Exposure time (shutter speed)");
   //GPMFWriteStreamStore(handleSHUT, GPMF_KEY_STREAM_NAME, GPMF_TYPE_STRING_ASCII, strlen(txt), 1, &txt, GPMF_FLAGS_STICKY);
