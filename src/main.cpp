@@ -318,10 +318,7 @@ bool create_pipeline()
   filesink = gst_bin_get_by_name(GST_BIN(pipeline), "filesink");
 
   appsrc = gst_element_factory_make("appsrc", NULL);
-  GstCaps *caps = gst_caps_new_simple("meta/x-raw",
-    "fourcc", G_TYPE_STRING, "gpmd",
-    "hdlr-name", G_TYPE_STRING, "\tGoPro MET",
-    NULL);
+  GstCaps *caps = gst_caps_from_string("gpmf/x-raw");
 
   /* Configure appsrc */
   g_object_set (appsrc, "caps", caps, NULL);
@@ -335,7 +332,7 @@ bool create_pipeline()
   gst_bin_add_many(GST_BIN(pipeline), appsrc, NULL);
   {
     GstPad *srcpad = gst_element_get_static_pad(appsrc, "src");
-    GstPad *sinkpad = gst_element_get_request_pad(mp4mux, "meta_0");
+    GstPad *sinkpad = gst_element_get_request_pad(mp4mux, "gpmf_0");
     gst_pad_link (srcpad, sinkpad);
   }
 
