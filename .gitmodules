@@ -1,0 +1,3 @@
+[submodule "external/gpmf-write"]
+	path = external/gpmf-write
+	url = https://github.com/gopro/gpmf-write.git

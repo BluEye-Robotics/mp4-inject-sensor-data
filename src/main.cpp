@@ -8,8 +8,8 @@
 #include <thread>
 #include <unistd.h>
 #include "sys/time.h"
-#include "GPMF_common.h"
-#include "GPMF_writer.h"
+#include "gpmf-write/GPMF_common.h"
+#include "gpmf-write/GPMF_writer.h"
 #include "cmath"
 
 GMainLoop *loop = NULL;
